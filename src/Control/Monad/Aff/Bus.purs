@@ -31,15 +31,15 @@ module Control.Monad.Aff.Bus
 
 import Prelude
 
-import Control.Monad.Aff (Aff, attempt, launchAff_)
-import Control.Monad.Aff.AVar (AVAR, AVar, killVar, makeEmptyVar, putVar, takeVar)
-import Control.Monad.Eff.AVar as EffAvar
-import Control.Monad.Eff.Class (class MonadEff, liftEff)
-import Control.Monad.Eff.Exception as Exn
 import Data.Foldable (foldl, sequence_, traverse_)
 import Data.List (List, (:))
-import Data.Monoid (mempty)
 import Data.Tuple (Tuple(..))
+import Effect.AVar (AVar)
+import Effect.AVar as EffAvar
+import Effect.Aff (Aff, attempt, launchAff_)
+import Effect.Aff as Aff
+import Effect.Aff.AVar as AVar
+import Effect.Class (class MonadEffect, liftEffect)
 
 data Cap
 
@@ -56,39 +56,39 @@ type BusW' r = Bus (write ∷ Cap | r)
 type BusRW = Bus (read ∷ Cap, write ∷ Cap)
 
 -- | Creates a new bidirectional Bus which can be read from and written to.
-make ∷ ∀ m eff a. MonadEff (avar ∷ AVAR | eff) m => m (BusRW a)
-make = liftEff do
-  cell ← EffAvar.makeEmptyVar
-  consumers ← EffAvar.makeVar mempty
+make ∷ ∀ m a. MonadEffect m => m (BusRW a)
+make = liftEffect do
+  cell ← EffAvar.empty
+  consumers ← EffAvar.new mempty
   let
-    loop = attempt (takeVar cell) >>= traverse_ \res → do
-      vars ← takeVar consumers
-      putVar mempty consumers
-      sequence_ (foldl (\xs a → putVar res a : xs) mempty vars)
+    loop = attempt (AVar.take cell) >>= traverse_ \res → do
+      vars ← AVar.take consumers
+      AVar.put mempty consumers
+      sequence_ (foldl (\xs a → AVar.put res a : xs) mempty vars)
       loop
   launchAff_ loop
 
   pure $ Bus cell consumers
 
 -- | Blocks until a new value is pushed to the Bus, returning the value.
-read ∷ ∀ eff a r. BusR' r a → Aff (avar ∷ AVAR | eff) a
+read ∷ ∀ a r. BusR' r a → Aff a
 read (Bus _ consumers) = do
-  res' ← makeEmptyVar
-  cs ← takeVar consumers
-  putVar (res' : cs) consumers
-  takeVar res'
+  res' ← AVar.empty
+  cs ← AVar.take consumers
+  AVar.put (res' : cs) consumers
+  AVar.take res'
 
 -- | Pushes a new value to the Bus, yieldig immediately.
-write ∷ ∀ eff a r. a → BusW' r a → Aff (avar ∷ AVAR | eff) Unit
-write a (Bus cell _) = putVar a cell
+write ∷ ∀ a r. a → BusW' r a → Aff Unit
+write a (Bus cell _) = AVar.put a cell
 
 -- | Splits a bidirectional Bus into separate read and write Buses.
 split ∷ ∀ a. BusRW a → Tuple (BusR a) (BusW a)
 split (Bus a b) = Tuple (Bus a b) (Bus a b)
 
 -- | Kills the Bus and propagates the exception to all consumers.
-kill ∷ ∀ eff a r. Exn.Error → BusW' r a → Aff (avar ∷ AVAR | eff) Unit
+kill ∷ ∀ a r. Aff.Error → BusW' r a → Aff Unit
 kill err (Bus cell consumers) = do
-  killVar err cell
-  vars ← takeVar consumers
-  traverse_ (killVar err) vars
+  AVar.kill err cell
+  vars ← AVar.take consumers
+  traverse_ (AVar.kill err) vars
